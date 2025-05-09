@@ -1,0 +1,10 @@
+streamlit
+openai==0.28
+gurobipy
+pandas
+python-dotenv
+flask
+openpyxl
+
+# text‐fuzzy matching
+rapidfuzz
