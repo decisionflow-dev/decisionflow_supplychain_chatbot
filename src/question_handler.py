@@ -10,8 +10,13 @@ from dotenv import load_dotenv
 from src.utils import file_paths
 from rapidfuzz import process
 from fuzzywuzzy import fuzz
-
+from rapidfuzz import process
+import re
+import json, ast
 from src.utils import file_paths
+import nltk
+nltk.download('wordnet')
+nltk.download('omw-1.4')  # For multilingual support (optional but safe)
 
 
 _original_demand_df       = pd.read_csv(file_paths["demands.csv"])
@@ -38,36 +43,66 @@ preview_datasets()
 demand_data = demand_df.to_csv(index=False)
 processing_data = processing_df.to_csv(index=False)
 transportation_data = transportation_df.to_csv(index=False)
-import re
 
 # at the top of question_handler.py, add:
-from rapidfuzz import process
+from nltk.corpus import wordnet
 
-
-import re
-import json, ast
+def get_wordnet_synonyms(word):
+    synonyms = set()
+    for syn in wordnet.synsets(word):
+        for lemma in syn.lemmas():
+            name = lemma.name().replace("_", " ").lower()
+            if name != word:
+                synonyms.add(name)
+    return list(synonyms)
 
 # map of canonical entities → vague user phrases
-fuzzy_entity_map = {
-    "roastery": ["roaster", "roasting site", "coffee factory", "bean processor", "roast house"],
-    "supplier": ["supply center", "supply depot", "source warehouse", "bean source", "provider"],
-    "cafe":     ["coffee shop", "branch", "retail point", "outlet", "customer location"]
-}
+canonical_entities = ["supplier", "roastery", "cafe"]
 
-def fuzzy_replace_entities(question: str, threshold: int = 85) -> str:
-    """
-    Replace vague user phrases with canonical dataset entity names
-    using fuzzy matching.
-    """
+fuzzy_entity_map = {}
+for entity in canonical_entities:
+    wordnet_syns = get_wordnet_synonyms(entity)
+
+    # Manually add custom phrases WordNet might miss
+    custom_additions = {
+        "supplier": ["vendor", "bean source"],
+        "roastery": ["coffee factory", "roast house"],
+        "cafe": ["coffee shop", "outlet", "retail point"]
+    }.get(entity, [])
+
+    fuzzy_entity_map[entity] = list(set(wordnet_syns + custom_additions))
+
+
+# def fuzzy_replace_entities(question: str, threshold: int = 75) -> str:
+#     """
+#     Replace vague user phrases with canonical dataset entity names
+#     using fuzzy matching.
+#     """
+#     for canonical, variants in fuzzy_entity_map.items():
+#         for variant in variants:
+#             if process.extractOne(variant, [question], score_cutoff=threshold):
+#                 question = re.sub(
+#                     re.escape(variant),
+#                     canonical,
+#                     question,
+#                     flags=re.IGNORECASE
+#                 )
+#     return question
+
+def fuzzy_replace_entities(question: str, threshold: int = 75) -> str:
     for canonical, variants in fuzzy_entity_map.items():
         for variant in variants:
-            if process.extractOne(variant, [question], score_cutoff=threshold):
-                question = re.sub(
-                    re.escape(variant),
-                    canonical,
-                    question,
-                    flags=re.IGNORECASE
-                )
+            # Case-insensitive fuzzy match
+            if process.extractOne(variant.lower(), [question.lower()], score_cutoff=threshold):
+                # Whole-word replacement only
+                if re.search(rf"\b{re.escape(variant)}\b", question, flags=re.IGNORECASE):
+                    print(f"[DEBUG] Replacing '{variant}' → '{canonical}' in question: {question}")
+                    question = re.sub(
+                        rf"\b{re.escape(variant)}\b",
+                        canonical,
+                        question,
+                        flags=re.IGNORECASE
+                    )
     return question
 
 def safe_parse_json(response_text: str):
@@ -177,6 +212,7 @@ based on the user’s natural language question.
 - Only choose from these three files: 'demands.csv', 'processing.csv', 'transportation.csv'
 - Never mention or return any other file name
 - Only include columns that exist in the file
+- ⚠️ Always include 'entity_type' if the question compares suppliers and roasteries
 - Your output must be a valid JSON with this format:
   {{ "file": "file_name.csv", "columns": ["col1", "col2", ...] }}
 
@@ -524,39 +560,128 @@ def handle_what_if(question):
 
     # Apply modifications
     modified_data = {}
+    # if "processing" in modifications:
+    #     modified_processing = processing_df.copy()
+    #     for mod in modifications["processing"]:
+    #         # modified_processing.loc[
+    #         #     (modified_processing["entity"] == mod["entity"]) &
+    #         #     (modified_processing["coffee_type"] == mod["coffee_type"]),
+    #         #     "capacity"
+    #         # ] = mod["new_capacity"]
+    #         if "new_capacity" in mod:
+    #             modified_processing.loc[
+    #             (modified_processing["entity"] == mod["entity"]) &
+    #             (modified_processing["coffee_type"] == mod["coffee_type"]),
+    #             "capacity"
+    #             ] = mod["new_capacity"]
+    #         elif "change" in mod:
+    #             modified_processing.loc[
+    #              (modified_processing["entity"] == mod["entity"]) &
+    #             (modified_processing["coffee_type"] == mod["coffee_type"]),
+    #             "capacity"
+    #         ] += mod["change"]
+    #     modified_data["processing"] = modified_processing
+
+    # if "demand" in modifications:
+    #     modified_demand = demand_df.copy()
+    #     for mod in modifications["demand"]:
+    #         if "new_demand" in mod:
+    #             modified_demand.loc[
+    #                 (modified_demand["cafe"] == mod["cafe"]) &
+    #                 (modified_demand["coffee_type"] == mod["coffee_type"]),
+    #                 "demand"
+    #             ] = mod["new_demand"]
+    #         elif "change" in mod:
+    #             modified_demand.loc[
+    #                 (modified_demand["cafe"] == mod["cafe"]) &
+    #                 (modified_demand["coffee_type"] == mod["coffee_type"]),
+    #                 "demand"
+    #             ] += mod["change"]
+    #     modified_data["demand"] = modified_demand
+
+    # if "transportation" in modifications:
+    #     modified_transportation = transportation_df.copy()
+    #     for mod in modifications["transportation"]:
+    #         if "new_cost" in mod:
+    #             modified_transportation.loc[
+    #                 (modified_transportation["from"] == mod["from"]) &
+    #                 (modified_transportation["to"] == mod["to"]) &
+    #                 (modified_transportation["coffee_type"] == mod["coffee_type"]),
+    #                 "cost"
+    #             ] = mod["new_cost"]
+    #         elif "change_percentage" in mod:
+    #             modified_transportation.loc[
+    #                 (modified_transportation["from"] == mod["from"]) &
+    #                 (modified_transportation["to"] == mod["to"]) &
+    #                 (modified_transportation["coffee_type"] == mod["coffee_type"]),
+    #                 "cost"
+    #             ] *= (1 + mod["change_percentage"] / 100)
+    #     modified_data["transportation"] = modified_transportation
+    if "demand" in modifications:
+            modified_demand = demand_df.copy()
+            for mod in modifications["demand"]:
+                if "new_demand" in mod:
+                    modified_demand.loc[
+                        (modified_demand["cafe"] == mod["cafe"]) &
+                        (modified_demand["coffee_type"] == mod["coffee_type"]),
+                        "demand"
+                    ] = mod["new_demand"]
+                elif "change" in mod:
+                    modified_demand.loc[
+                        (modified_demand["cafe"] == mod["cafe"]) &
+                        (modified_demand["coffee_type"] == mod["coffee_type"]),
+                        "demand"
+                    ] += mod["change"]
+            modified_data["demand"] = modified_demand
+
+    # ✅ Update Processing Dataset
     if "processing" in modifications:
         modified_processing = processing_df.copy()
         for mod in modifications["processing"]:
-            modified_processing.loc[
-                (modified_processing["entity"] == mod["entity"]) &
-                (modified_processing["coffee_type"] == mod["coffee_type"]),
-                "capacity"
-            ] = mod["new_capacity"]
+            if "new_capacity" in mod:
+                modified_processing.loc[
+                    (modified_processing["entity"] == mod["entity"]) &
+                    (modified_processing["coffee_type"] == mod["coffee_type"]),
+                    "capacity"
+                ] = mod["new_capacity"]
+            elif "change" in mod:
+                modified_processing.loc[
+                    (modified_processing["entity"] == mod["entity"]) &
+                    (modified_processing["coffee_type"] == mod["coffee_type"]),
+                    "capacity"
+                ] += mod["change"]
         modified_data["processing"] = modified_processing
 
-    if "demand" in modifications:
-        modified_demand = demand_df.copy()
-        for mod in modifications["demand"]:
-            modified_demand.loc[
-                (modified_demand["cafe"] == mod["cafe"]) &
-                (modified_demand["coffee_type"] == mod["coffee_type"]),
-                "demand"
-            ] = mod["new_demand"]
-        modified_data["demand"] = modified_demand
-
+    # ✅ Update Transportation Dataset
     if "transportation" in modifications:
         modified_transportation = transportation_df.copy()
         for mod in modifications["transportation"]:
-            modified_transportation.loc[
-                (modified_transportation["from"] == mod["from"]) &
-                (modified_transportation["to"] == mod["to"]) &
-                (modified_transportation["coffee_type"] == mod["coffee_type"]),
-                "cost"
-            ] = mod["new_cost"]
+            if "new_cost" in mod:
+                modified_transportation.loc[
+                    (modified_transportation["from"] == mod["from"]) &
+                    (modified_transportation["to"] == mod["to"]) &
+                    (modified_transportation["coffee_type"] == mod["coffee_type"]),
+                    "cost"
+                ] = mod["new_cost"]
+            elif "change_percentage" in mod:
+                modified_transportation.loc[
+                    (modified_transportation["from"] == mod["from"]) &
+                    (modified_transportation["to"] == mod["to"]) &
+                    (modified_transportation["coffee_type"] == mod["coffee_type"]),
+                    "cost"
+                ] *= (1 + mod["change_percentage"] / 100)
         modified_data["transportation"] = modified_transportation
 
+    
+
     # Run modified optimization model
-    return run_optimization()
+    # return run_optimization()
+    return run_optimization(
+    demand_df,
+    processing_df,
+    transportation_df
+    )
+
 import pandas as pd
 from src.utils import file_paths
 
@@ -803,46 +928,110 @@ def extract_modifications_from_question(question):
     return modifications
 
 
+# def apply_modifications(modifications):
+#     """Applies dataset modifications based on extracted what-if parameters."""
+
+#     modified_data = {}
+
+#     # **Update Demand Dataset**
+#     if "demand" in modifications:
+#         modified_demand = demand_df.copy()
+#         for mod in modifications["demand"]:
+#             modified_demand.loc[
+#                 (modified_demand["cafe"] == mod["cafe"]) &
+#                 (modified_demand["coffee_type"] == mod["coffee_type"]),
+#                 "demand"
+#             ] += mod["change"]  # Increase or decrease demand
+#         modified_data["demand"] = modified_demand
+
+#     # **Update Supplier/Roastery Capacities (Processing Dataset)**
+#     if "processing" in modifications:
+#         modified_processing = processing_df.copy()
+#         for mod in modifications["processing"]:
+#             modified_processing.loc[
+#                 (modified_processing["entity"] == mod["entity"]) &
+#                 (modified_processing["coffee_type"] == mod["coffee_type"]),
+#                 "capacity"
+#             ] += mod["change"]  # Increase or decrease capacity
+#         modified_data["processing"] = modified_processing
+
+#     # **Update Transportation Costs**
+#     if "transportation" in modifications:
+#         modified_transportation = transportation_df.copy()
+#         for mod in modifications["transportation"]:
+#             modified_transportation.loc[
+#                 (modified_transportation["from"] == mod["from"]) &
+#                 (modified_transportation["to"] == mod["to"]) &
+#                 (modified_transportation["coffee_type"] == mod["coffee_type"]),
+#                 "cost"
+#             ] *= (1 + mod["change_percentage"] / 100)  # Adjust cost by percentage
+#         modified_data["transportation"] = modified_transportation
+
+#     return modified_data
+
 def apply_modifications(modifications):
     """Applies dataset modifications based on extracted what-if parameters."""
 
     modified_data = {}
 
-    # **Update Demand Dataset**
+    # ✅ Update Demand Dataset
     if "demand" in modifications:
         modified_demand = demand_df.copy()
         for mod in modifications["demand"]:
-            modified_demand.loc[
-                (modified_demand["cafe"] == mod["cafe"]) &
-                (modified_demand["coffee_type"] == mod["coffee_type"]),
-                "demand"
-            ] += mod["change"]  # Increase or decrease demand
+            if "new_demand" in mod:
+                modified_demand.loc[
+                    (modified_demand["cafe"] == mod["cafe"]) &
+                    (modified_demand["coffee_type"] == mod["coffee_type"]),
+                    "demand"
+                ] = mod["new_demand"]
+            elif "change" in mod:
+                modified_demand.loc[
+                    (modified_demand["cafe"] == mod["cafe"]) &
+                    (modified_demand["coffee_type"] == mod["coffee_type"]),
+                    "demand"
+                ] += mod["change"]
         modified_data["demand"] = modified_demand
 
-    # **Update Supplier/Roastery Capacities (Processing Dataset)**
+    # ✅ Update Supplier/Roastery Capacities (Processing Dataset)
     if "processing" in modifications:
         modified_processing = processing_df.copy()
         for mod in modifications["processing"]:
-            modified_processing.loc[
-                (modified_processing["entity"] == mod["entity"]) &
-                (modified_processing["coffee_type"] == mod["coffee_type"]),
-                "capacity"
-            ] += mod["change"]  # Increase or decrease capacity
+            if "new_capacity" in mod:
+                modified_processing.loc[
+                    (modified_processing["entity"] == mod["entity"]) &
+                    (modified_processing["coffee_type"] == mod["coffee_type"]),
+                    "capacity"
+                ] = mod["new_capacity"]
+            elif "change" in mod:
+                modified_processing.loc[
+                    (modified_processing["entity"] == mod["entity"]) &
+                    (modified_processing["coffee_type"] == mod["coffee_type"]),
+                    "capacity"
+                ] += mod["change"]
         modified_data["processing"] = modified_processing
 
-    # **Update Transportation Costs**
+    # ✅ Update Transportation Costs
     if "transportation" in modifications:
         modified_transportation = transportation_df.copy()
         for mod in modifications["transportation"]:
-            modified_transportation.loc[
-                (modified_transportation["from"] == mod["from"]) &
-                (modified_transportation["to"] == mod["to"]) &
-                (modified_transportation["coffee_type"] == mod["coffee_type"]),
-                "cost"
-            ] *= (1 + mod["change_percentage"] / 100)  # Adjust cost by percentage
+            if "new_cost" in mod:
+                modified_transportation.loc[
+                    (modified_transportation["from"] == mod["from"]) &
+                    (modified_transportation["to"] == mod["to"]) &
+                    (modified_transportation["coffee_type"] == mod["coffee_type"]),
+                    "cost"
+                ] = mod["new_cost"]
+            elif "change_percentage" in mod:
+                modified_transportation.loc[
+                    (modified_transportation["from"] == mod["from"]) &
+                    (modified_transportation["to"] == mod["to"]) &
+                    (modified_transportation["coffee_type"] == mod["coffee_type"]),
+                    "cost"
+                ] *= (1 + mod["change_percentage"] / 100)
         modified_data["transportation"] = modified_transportation
 
     return modified_data
+
 def run_what_if_scenario(question):
     """Handles the full what-if flow, applies your mods, reruns, and returns a text summary."""
     global demand_df, processing_df, transportation_df, latest_optimization_results
@@ -855,6 +1044,8 @@ def run_what_if_scenario(question):
     # 2️⃣ Normalize & extract
     question = fuzzy_replace_entities(question)
     modifications = extract_modifications_from_question(question)
+    print("[DEBUG] Extracted modifications:", modifications)
+
     modified_data  = apply_modifications(modifications)
 
     # 3️⃣ Persist the modifications

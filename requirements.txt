@@ -8,3 +8,5 @@ openpyxl
 
 # text‐fuzzy matching
 rapidfuzz
+# for WordNet-based synonym matching
+nltk
