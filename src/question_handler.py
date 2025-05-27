@@ -9,7 +9,7 @@ from src.optimization_model import run_optimization
 from dotenv import load_dotenv
 from src.utils import file_paths
 from rapidfuzz import process
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz
 from rapidfuzz import process
 import re
 import json, ast
