@@ -1,6 +1,6 @@
 import streamlit as st
 from src.question_handler import classify_question, handle_descriptive, run_what_if_scenario, handle_reset, handle_continue,handle_optimization
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz
 
 
 # 🔧 Page config
