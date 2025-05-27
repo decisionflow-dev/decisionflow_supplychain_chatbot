@@ -9,7 +9,7 @@ from src.optimization_model import run_optimization
 from dotenv import load_dotenv
 from src.utils import file_paths
 from rapidfuzz import process
-
+from fuzzywuzzy import fuzz
 
 from src.utils import file_paths
 
@@ -291,6 +291,13 @@ def classify_question(question):
     question = fuzzy_replace_entities(question)
 
     # 2️⃣ Lowercase and trim for pattern checks
+        # 👋 Greeting Detection (before GPT)
+    greeting_phrases = ["hi", "hello", "hey", "hola", "greetings", "howdy", "yo", "sup", "good morning", "good evening"]
+    for greet in greeting_phrases:
+        if fuzz.token_set_ratio(question.lower(), greet) >= 80:
+            print(f"[DEBUG] Greeting detected: {question}")
+            return "greeting"
+
     question_lower = question.lower().strip()
         # Manual shortcuts for reset / continue flows
     reset_kw = {
